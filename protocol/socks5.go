@@ -1,32 +1,34 @@
-package socks5
+package protocol
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"time"
+
+	"finder.ink/proxy/encrypt"
 )
 
-type Auth struct {
+type Socks5Auth struct {
 	Ver     uint8
 	Nmethod uint8
 }
 
-type AuthReply struct {
+type Socks5AuthReply struct {
 	Ver    uint8
 	Method uint8
 }
 
-type Request struct {
+type Socks5Request struct {
 	Ver         uint8
 	Cmd         uint8
 	Reserved    uint8
 	AddressType uint8
 }
 
-type RequestReply struct {
+type Socks5RequestReply struct {
 	Ver     uint8
 	Rsp     uint8
 	Rsv     uint8
@@ -35,102 +37,82 @@ type RequestReply struct {
 	BndPort uint16
 }
 
-func long2IP(ipLong uint32) string {
-	ipByte := make([]byte, 4)
-	binary.BigEndian.PutUint32(ipByte, ipLong)
-	ip := net.IP(ipByte)
-	return ip.String()
+type Socks5Protocol struct {
+	conn   net.Conn
+	auth   Socks5Auth
+	req    Socks5Request
+	buff   []byte
+	Config ProtoConfig
 }
 
-func ip2Long(ipAddr string) uint32 {
-	ip := net.ParseIP(ipAddr)
-	ip = ip.To4()
-	return binary.BigEndian.Uint32(ip)
+func NewSocks5(conn net.Conn, config ProtoConfig) *Socks5Protocol {
+	return &Socks5Protocol{conn: conn, Config: config, buff: make([]byte, 512)}
 }
 
-func queryDns(domain string) (string, error) {
-	host, err := net.LookupHost(domain)
-	if err != nil {
-		return "", err
-	}
-	// pick first one
-	return host[0], nil
-}
-
-func parseAddress(atype uint8, data []byte) (string, error) {
-	var ip string
+// parse socks5 proto address, return ip, port, err
+func (p *Socks5Protocol) parseAddress(atype uint8, data []byte) (string, uint16, error) {
+	var addr string
 	var port uint16
-	var err error
 
 	if atype == 1 {
 		ipLong := binary.BigEndian.Uint32(data[:4])
-		ip = long2IP(ipLong)
+		addr = long2IP(ipLong)
 		port = binary.BigEndian.Uint16(data[4:6])
 	} else if atype == 3 {
 		alen := uint8(data[0])
-		domain := data[1 : 1+alen]
-		ip, err = queryDns(string(domain))
-		if err != nil {
-			return "", err
-		}
+		addr = string(data[1 : 1+alen])
 		port = binary.BigEndian.Uint16(data[1+alen : 3+alen])
 	} else {
-		return "", errors.New("not supported socks5 address type")
+		return "", 0, errors.New("not supported socks5 address type")
 	}
 
-	return fmt.Sprintf("%s:%d", ip, port), nil
+	return addr, port, nil
 }
 
-func replyRequest(conn net.Conn, addr string) error {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return err
-	}
-	reply := &RequestReply{
+func (p *Socks5Protocol) replyRequest(rsp uint8) error {
+	reply := &Socks5RequestReply{
 		Ver:     5,
-		Rsp:     0,
+		Rsp:     rsp,
 		Rsv:     0,
 		Atype:   1,
-		BndAddr: ip2Long(tcpAddr.IP.String()),
-		BndPort: uint16(tcpAddr.Port), // 应该传大端，应该也没啥问题
+		BndAddr: 0, // ignore
+		BndPort: 0, // ignore
 	}
 
-	err = binary.Write(conn, binary.BigEndian, reply)
+	err := binary.Write(p.conn, binary.BigEndian, reply)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func AuthMethod(conn net.Conn) error {
-	buff, err := ioutil.ReadAll(conn)
+func (p *Socks5Protocol) authMethod() error {
+	n, err := p.conn.Read(p.buff)
+	if err != nil {
+		return err
+	}
+	authReader := bytes.NewReader(p.buff)
+
+	err = binary.Read(authReader, binary.BigEndian, &p.auth)
 	if err != nil {
 		return err
 	}
 
-	var auth Auth
-	authReader := bytes.NewReader(buff)
-
-	err = binary.Read(authReader, binary.BigEndian, &auth)
-	if err != nil {
-		return err
-	}
-
-	if auth.Ver != 5 || auth.Nmethod == 0 {
+	if p.auth.Ver != 5 || p.auth.Nmethod == 0 {
 		return errors.New("auth ver or nmethod error")
 	}
 
-	authMethod := buff[2:]
+	authMethod := p.buff[2:n]
 	if !bytes.Contains(authMethod, []byte{0}) {
 		return errors.New("no support auth method")
 	}
 
-	reply := &AuthReply{
+	reply := &Socks5AuthReply{
 		Ver:    5,
 		Method: 0,
 	}
 
-	err = binary.Write(conn, binary.BigEndian, reply)
+	err = binary.Write(p.conn, binary.BigEndian, reply)
 	if err != nil {
 		return err
 	}
@@ -139,32 +121,116 @@ func AuthMethod(conn net.Conn) error {
 }
 
 // return request address
-func ProcessRequest(conn net.Conn) (string, error) {
-	buff, err := ioutil.ReadAll(conn)
+func (p *Socks5Protocol) processRequest() ([]byte, error) {
+	n, err := p.conn.Read(p.buff)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var req Request
-	reqReader := bytes.NewReader(buff)
-	err = binary.Read(reqReader, binary.BigEndian, &req)
+	reqReader := bytes.NewReader(p.buff)
+	err = binary.Read(reqReader, binary.BigEndian, &p.req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	if req.Ver != 5 || req.Cmd != 1 {
-		return "", errors.New("request ver or cmd error")
+	if p.req.Ver != 5 || p.req.Cmd != 1 {
+		return nil, errors.New("request ver or cmd error")
 	}
 
-	address, err := parseAddress(req.AddressType, buff[4:])
+	return p.buff[4:n], nil
+}
+
+func (p *Socks5Protocol) deployServer(data []byte) (net.Conn, error) {
+	// deploy server connect
+	addr, port, err := p.parseAddress(p.req.AddressType, data)
 	if err != nil {
-		return "", err
+		return nil, err
+	}
+	ip := addr
+	if p.req.AddressType == 3 {
+		ip, err = queryDns(addr)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	err = replyRequest(conn, address)
+	tcpAddr := fmt.Sprintf("%s:%d", ip, port)
+	conn, err := net.Dial("tcp", tcpAddr)
 	if err != nil {
-		return "", err
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (p *Socks5Protocol) deployLocal(data []byte) (net.Conn, error) {
+	conn, err := net.Dial("tcp", p.Config.RemoteAddr)
+	if err != nil {
+		return nil, err
+	}
+	addrBuff := make([]byte, 256)
+
+	var privateHeader PrivateProtoHeader
+	// parse address
+	addr, port, err := p.parseAddress(p.req.AddressType, data)
+	if err != nil {
+		return nil, err
 	}
 
-	return address, nil
+	privateHeader.Port = port
+	privateHeader.Timestamp = uint32(time.Now().Unix())
+
+	if p.req.AddressType == 1 {
+		privateHeader.AddrLen = 4
+		privateHeader.Type = PRIVATE_V4_ADDR
+		binary.BigEndian.PutUint32(addrBuff, ip2Long(addr))
+		addrBuff = addrBuff[:4]
+	} else if p.req.AddressType == 3 {
+		privateHeader.AddrLen = uint8(len(addr))
+		privateHeader.Type = PRIVATRE_DOMAIN_ADDR
+		addrBuff = []byte(addr)
+	} else {
+		return nil, fmt.Errorf("unsupported address type: %d", p.req.AddressType)
+	}
+
+	binBuffer := &bytes.Buffer{}
+	binary.Write(binBuffer, binary.BigEndian, privateHeader)
+	encryptBuffer := append(binBuffer.Bytes(), addrBuff...)
+	if p.Config.Encrypt {
+		encrypt.Encrypt(encryptBuffer)
+	}
+
+	_, err = conn.Write(encryptBuffer)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (p *Socks5Protocol) HandShake() (net.Conn, error) {
+	err := p.authMethod()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := p.processRequest()
+	if err != nil {
+		return nil, err
+	}
+	var remoteConn net.Conn
+	if p.Config.Deploy == DEPLOY_SERVER {
+		remoteConn, err = p.deployServer(data)
+	} else if p.Config.Deploy == DEPLOY_LOCAL {
+		remoteConn, err = p.deployLocal(data)
+	}
+	if err != nil {
+		p.replyRequest(1)
+		return nil, err
+	}
+
+	err = p.replyRequest(0)
+	if err != nil {
+		return nil, err
+	}
+
+	return remoteConn, nil
 }
