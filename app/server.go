@@ -12,6 +12,7 @@ type Server struct {
 	config      Config
 	recvDecrypt bool
 	sendEncrypt bool
+	encryptor   encrypt.Encryptor
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -60,10 +61,10 @@ func (p *Server) transfer(src, dst net.Conn) {
 			return
 		}
 		if p.recvDecrypt {
-			encrypt.Decrypt(buff[:n])
+			p.encryptor.Decrypt(buff[:n])
 		}
 		if p.sendEncrypt {
-			encrypt.Encrypt(buff[:n])
+			p.encryptor.Encrypt(buff[:n])
 		}
 		for i := 0; i < n; {
 			m, err := dst.Write(buff[i:n])
@@ -81,6 +82,7 @@ func (p *Server) protocolHandshake(conn net.Conn) {
 		Deploy:     p.config.Deploy,
 		RemoteAddr: p.config.RemoteAddr,
 		Encrypt:    p.config.Encrypt,
+		Encryptor:  &p.encryptor,
 	}
 
 	switch p.config.Protocol {

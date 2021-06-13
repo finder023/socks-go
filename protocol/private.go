@@ -5,15 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-
-	"finder.ink/proxy/encrypt"
 )
 
 type PrivateProtoHeader struct {
-	Port      uint16
-	Type      uint8
-	AddrLen   uint8
-	Timestamp uint32
+	Port    uint16
+	Type    uint8
+	AddrLen uint8
+	XorKey  uint32
 }
 
 type PrivateProtocol struct {
@@ -35,7 +33,7 @@ func (p *PrivateProtocol) processRequest() (string, error) {
 	}
 
 	if p.Config.Encrypt {
-		encrypt.Decrypt(headerBytes)
+		p.Config.Encryptor.NaiveDecrypt(headerBytes)
 	}
 
 	headerBuff := bytes.NewBuffer(headerBytes)
@@ -43,6 +41,8 @@ func (p *PrivateProtocol) processRequest() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	p.Config.Encryptor.XorKey = uint8(p.Header.XorKey)
 
 	addrBuff := make([]byte, p.Header.AddrLen)
 	for i := 0; i < int(p.Header.AddrLen); {
@@ -54,7 +54,7 @@ func (p *PrivateProtocol) processRequest() (string, error) {
 	}
 
 	if p.Config.Encrypt {
-		encrypt.Decrypt(addrBuff)
+		p.Config.Encryptor.NaiveDecrypt(addrBuff)
 	}
 
 	var ipAddr string

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 	"time"
-
-	"finder.ink/proxy/encrypt"
 )
 
 type Socks5Auth struct {
@@ -176,8 +174,10 @@ func (p *Socks5Protocol) deployLocal(data []byte) (net.Conn, error) {
 		return nil, err
 	}
 
+	xorKey := uint32(time.Now().Unix()) % 255
 	privateHeader.Port = port
-	privateHeader.Timestamp = uint32(time.Now().Unix())
+	privateHeader.XorKey = xorKey
+	p.Config.Encryptor.XorKey = uint8(xorKey) // ser xor key for app
 
 	if p.req.AddressType == 1 {
 		privateHeader.AddrLen = 4
@@ -196,7 +196,7 @@ func (p *Socks5Protocol) deployLocal(data []byte) (net.Conn, error) {
 	binary.Write(binBuffer, binary.BigEndian, privateHeader)
 	encryptBuffer := append(binBuffer.Bytes(), addrBuff...)
 	if p.Config.Encrypt {
-		encrypt.Encrypt(encryptBuffer)
+		p.Config.Encryptor.NaiveEncrypt(encryptBuffer)
 	}
 
 	_, err = conn.Write(encryptBuffer)

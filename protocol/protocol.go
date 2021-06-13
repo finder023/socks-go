@@ -3,6 +3,8 @@ package protocol
 import (
 	"encoding/binary"
 	"net"
+
+	"finder.ink/proxy/encrypt"
 )
 
 type Protocol interface {
@@ -59,6 +61,7 @@ type ProtoConfig struct {
 	Deploy     DeployType
 	RemoteAddr string
 	Encrypt    bool
+	Encryptor  *encrypt.Encryptor
 }
 
 // common function
