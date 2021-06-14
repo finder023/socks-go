@@ -16,14 +16,14 @@ func parseArgs() (app.Config, error) {
 
 	localCmd := flag.NewFlagSet("local", flag.ExitOnError)
 	localCmd.StringVar(&proto, "protocol", "socks5", "proxy protocol: [socks5|ss|private|pass]")
-	localCmd.BoolVar(&encrypt, "encrypt", true, "encrypt or not")
+	localCmd.BoolVar(&encrypt, "encrypt", false, "encrypt or not")
 	localCmd.StringVar(&destAddr, "destination", "", "destination address: [ip:port]")
-	localCmd.StringVar(&listen, "listen", "127.0.0.1:1080", "listen address: [ip:port]")
+	localCmd.StringVar(&listen, "listen", "0.0.0.0:1080", "listen address: [ip:port]")
 
 	serverCmd := flag.NewFlagSet("server", flag.ExitOnError)
 	serverCmd.StringVar(&proto, "protocol", "socks5", "proxy protocol: [socks5|ss|private|pass]")
-	serverCmd.BoolVar(&encrypt, "encrypt", true, "encrypt or not")
-	serverCmd.StringVar(&listen, "listen", "127.0.0.1:1080", "listen address: [ip:port]")
+	serverCmd.BoolVar(&encrypt, "encrypt", false, "encrypt or not")
+	serverCmd.StringVar(&listen, "listen", "0.0.0.0:1080", "listen address: [ip:port]")
 
 	var config app.Config
 	if len(os.Args) < 2 {

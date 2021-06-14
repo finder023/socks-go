@@ -90,6 +90,10 @@ func (p *Server) protocolHandshake(conn net.Conn) {
 		proto = protocol.NewSocks5(conn, pConfig)
 	case protocol.PROTO_PRIVATE:
 		proto = protocol.NewPrivate(conn, pConfig)
+	case protocol.PROTO_SS:
+		proto = protocol.NewSS(conn, pConfig)
+	case protocol.PROTO_PASS:
+		proto = protocol.NewPass(conn, pConfig)
 	default:
 		println("unsupport protocol")
 		return
